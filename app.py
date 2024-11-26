@@ -4,12 +4,13 @@ import requests
 from bs4 import BeautifulSoup
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.manifold import TSNE
-import numpy as np
 from numpy.linalg import norm
+import numpy as np
 import matplotlib.pyplot as plt
 import plotly.express as px
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from umap import UMAP
 
 # Load the LaBSE model
 @st.cache_resource
@@ -29,21 +30,27 @@ def fetch_sitemap_urls(domain):
     all_urls = []
 
     for sitemap_url in sitemap_urls:
-        try:
-            response = requests.get(sitemap_url, headers={"User-Agent": "SiteFocusTool/1.0"}, timeout=10)
-            response.raise_for_status()
-            if "robots.txt" in sitemap_url:
-                for line in response.text.splitlines():
-                    if line.lower().startswith("sitemap:"):
-                        nested_sitemap_url = line.split(":", 1)[1].strip()
-                        all_urls.extend(fetch_sitemap_urls_from_xml(nested_sitemap_url, domain, recursive=True))
-            else:
-                all_urls.extend(fetch_sitemap_urls_from_xml(sitemap_url, domain, recursive=True))
-        except requests.RequestException:
-            continue
+        all_urls.extend(fetch_sitemap_urls_from_url(sitemap_url, domain))
     return list(set(all_urls))
 
-def fetch_sitemap_urls_from_xml(sitemap_url, domain, recursive=False):
+def fetch_sitemap_urls_from_url(sitemap_url, domain):
+    """Fetch URLs from a sitemap URL."""
+    urls = []
+    try:
+        response = requests.get(sitemap_url, headers={"User-Agent": "SiteFocusTool/1.0"}, timeout=10)
+        response.raise_for_status()
+        if "robots.txt" in sitemap_url:
+            for line in response.text.splitlines():
+                if line.lower().startswith("sitemap:"):
+                    nested_sitemap_url = line.split(":", 1)[1].strip()
+                    urls.extend(fetch_sitemap_urls_from_url(nested_sitemap_url, domain))
+        else:
+            urls.extend(fetch_sitemap_urls_from_xml(sitemap_url, domain))
+    except requests.RequestException:
+        pass
+    return urls
+
+def fetch_sitemap_urls_from_xml(sitemap_url, domain):
     """Fetch URLs from a sitemap XML file."""
     urls = []
     try:
@@ -53,8 +60,7 @@ def fetch_sitemap_urls_from_xml(sitemap_url, domain, recursive=False):
         if soup.find_all("sitemap"):
             for sitemap in soup.find_all("sitemap"):
                 loc = sitemap.find("loc").text
-                if recursive:
-                    urls.extend(fetch_sitemap_urls_from_xml(loc, domain, recursive=True))
+                urls.extend(fetch_sitemap_urls_from_xml(loc, domain))
         else:
             for loc in soup.find_all("loc"):
                 url = loc.text
@@ -72,53 +78,53 @@ def clean_text_from_url(url, domain):
     text = text.replace("/", " ").replace("_", " ").replace("-", " ")
     return text.strip()
 
-def compute_embeddings(data):
-    """Generate normalized embeddings for the cleaned text."""
-    data["Embedding"] = data["Cleaned Text"].apply(lambda text: model.encode(text))
-    data["Embedding"] = data["Embedding"].apply(lambda emb: emb / norm(emb))  # Normalize
-    return data
+def compute_embeddings(cleaned_texts):
+    """Generate normalized embeddings for the cleaned texts."""
+    embeddings = model.encode(cleaned_texts, normalize_embeddings=True)
+    return embeddings
 
 def calculate_site_focus_and_radius(embeddings):
     """Calculate site focus score and site radius."""
     centroid_embedding = np.mean(embeddings, axis=0)
-    deviations = [1 - cosine_similarity([embedding], [centroid_embedding])[0][0] for embedding in embeddings]
+    centroid_embedding /= norm(centroid_embedding)
+    cosine_similarities = embeddings @ centroid_embedding
+    deviations = 1 - cosine_similarities
     site_radius = np.mean(deviations)
     site_focus_score = max(0, 1 - site_radius)
     return site_focus_score, site_radius, centroid_embedding, deviations
 
 def plot_gradient_strip_with_indicator(score, title):
     """Visualize the score as a gradient strip with an indicator."""
-    plt.figure(figsize=(8, 1))
+    fig = plt.figure(figsize=(8, 1))
     gradient = np.linspace(0, 1, 256).reshape(1, -1)
     gradient = np.vstack((gradient, gradient))
-    plt.imshow(gradient, aspect="auto", cmap="RdYlGn_r")  # Red to Green reversed for correct mapping
+    plt.imshow(gradient, aspect="auto", cmap="RdYlGn_r")
     plt.axvline(x=score * 256, color="black", linestyle="--", linewidth=2)
     plt.gca().set_axis_off()
     plt.title(f"{title}: {score * 100:.2f}%")
-    plt.show()
-    st.pyplot(plt)
+    st.pyplot(fig)
 
-def plot_3d_tsne(embeddings, urls, centroid, deviations):
-    """Interactive 3D t-SNE scatter plot with hover labels."""
-    tsne = TSNE(n_components=3, random_state=42, perplexity=min(30, len(embeddings) - 1))
-    tsne_results = tsne.fit_transform(np.vstack([embeddings, centroid]))
-    centroid_tsne = tsne_results[-1]  # Last point is the centroid
-    tsne_results = tsne_results[:-1]  # Remaining points are pages
+def plot_3d_projection(embeddings, urls, centroid, deviations):
+    """Interactive 3D UMAP scatter plot with hover labels."""
+    umap_model = UMAP(n_components=3, random_state=42)
+    umap_results = umap_model.fit_transform(np.vstack([embeddings, centroid]))
+    centroid_umap = umap_results[-1]  # Last point is the centroid
+    umap_results = umap_results[:-1]  # Remaining points are pages
 
     fig = px.scatter_3d(
-        x=tsne_results[:, 0],
-        y=tsne_results[:, 1],
-        z=tsne_results[:, 2],
+        x=umap_results[:, 0],
+        y=umap_results[:, 1],
+        z=umap_results[:, 2],
         color=deviations,
         color_continuous_scale="RdYlGn_r",
         hover_name=urls,
         labels={"color": "Deviation"},
-        title="3D t-SNE Projection of Page Embeddings"
+        title="3D UMAP Projection of Page Embeddings"
     )
     fig.add_scatter3d(
-        x=[centroid_tsne[0]],
-        y=[centroid_tsne[1]],
-        z=[centroid_tsne[2]],
+        x=[centroid_umap[0]],
+        y=[centroid_umap[1]],
+        z=[centroid_umap[2]],
         mode="markers",
         marker=dict(size=15, color="green"),
         name="Centroid"
@@ -127,12 +133,9 @@ def plot_3d_tsne(embeddings, urls, centroid, deviations):
 
 def plot_spherical_distances_optimized(deviations, embeddings, urls):
     """Improved scatter plot showing distances in a spherical layout with better angle distribution."""
-    # Normalize embeddings
-    normalized_embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
     num_points = len(deviations)
     angles = np.linspace(0, 2 * np.pi, num_points, endpoint=False)  # Spread angles evenly
 
-    # Create polar scatter plot
     fig = px.scatter_polar(
         r=deviations,
         theta=np.degrees(angles),
@@ -141,11 +144,10 @@ def plot_spherical_distances_optimized(deviations, embeddings, urls):
         title="Optimized Spherical Plot of Page Distances from Centroid",
         labels={"color": "Deviation"}
     )
-    # Update traces to show text (labels) only on hover
     fig.update_traces(
-        mode="markers",  # Display only markers by default
-        hovertemplate="%{text}<extra></extra>",  # Show text on hover
-        text=urls  # Set URLs as hover labels
+        mode="markers",
+        hovertemplate="%{text}<extra></extra>",
+        text=urls
     )
     st.plotly_chart(fig)
 
@@ -160,8 +162,14 @@ if st.button("START"):
         if not urls:
             st.error("No URLs found. Please check the domain and try again.")
         else:
+            # Limit the number of URLs to process for performance
+            max_urls = 500
+            if len(urls) > max_urls:
+                st.warning(f"Processing first {max_urls} URLs out of {len(urls)} total URLs.")
+                urls = urls[:max_urls]
+
             cleaned_texts = [clean_text_from_url(url, domain) for url in urls]
-            embeddings = np.array([model.encode(text) / norm(model.encode(text)) for text in cleaned_texts])
+            embeddings = compute_embeddings(cleaned_texts)
             site_focus_score, site_radius, centroid, deviations = calculate_site_focus_and_radius(embeddings)
 
             # Visualize siteFocusScore
@@ -176,14 +184,14 @@ if st.button("START"):
 
             # Sorted dataframe by closeness to centroid
             st.subheader("Pages Closest to Centroid")
-            distances = [1 - dev for dev in deviations]
+            distances = 1 - deviations
             df = pd.DataFrame({"URL": urls, "Proximity to Centroid": distances})
             df_sorted = df.sort_values(by="Proximity to Centroid", ascending=False)
             st.dataframe(df_sorted)
 
-            # Interactive 3D t-SNE plot
-            st.subheader("3D t-SNE Projection")
-            plot_3d_tsne(embeddings, urls, centroid, deviations)
+            # Interactive 3D UMAP plot
+            st.subheader("3D UMAP Projection")
+            plot_3d_projection(embeddings, urls, centroid, deviations)
 
             # Optimized spherical distance plot
             st.subheader("Spherical Distance Plot")
