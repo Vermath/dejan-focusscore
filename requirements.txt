@@ -7,5 +7,4 @@ scikit-learn
 numpy
 matplotlib
 plotly
-umap-learn
 lxml
