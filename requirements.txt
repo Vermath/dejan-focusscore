@@ -1,0 +1,10 @@
+streamlit
+pandas
+requests
+beautifulsoup4
+lxml
+sentence-transformers
+scikit-learn
+numpy
+matplotlib
+plotly
