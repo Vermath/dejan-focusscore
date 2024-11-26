@@ -188,4 +188,3 @@ if st.button("START"):
             # Optimized spherical distance plot
             st.subheader("Spherical Distance Plot")
             plot_spherical_distances_optimized(deviations, embeddings, urls)
-Hyper Icon
