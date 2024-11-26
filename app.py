@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import plotly.express as px
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from umap import UMAP
+from sklearn.decomposition import PCA
 
 # Load the LaBSE model
 @st.cache_resource
@@ -105,26 +105,26 @@ def plot_gradient_strip_with_indicator(score, title):
     st.pyplot(fig)
 
 def plot_3d_projection(embeddings, urls, centroid, deviations):
-    """Interactive 3D UMAP scatter plot with hover labels."""
-    umap_model = UMAP(n_components=3, random_state=42)
-    umap_results = umap_model.fit_transform(np.vstack([embeddings, centroid]))
-    centroid_umap = umap_results[-1]  # Last point is the centroid
-    umap_results = umap_results[:-1]  # Remaining points are pages
+    """Interactive 3D PCA scatter plot with hover labels."""
+    pca = PCA(n_components=3)
+    pca_results = pca.fit_transform(np.vstack([embeddings, centroid]))
+    centroid_pca = pca_results[-1]  # Last point is the centroid
+    pca_results = pca_results[:-1]  # Remaining points are pages
 
     fig = px.scatter_3d(
-        x=umap_results[:, 0],
-        y=umap_results[:, 1],
-        z=umap_results[:, 2],
+        x=pca_results[:, 0],
+        y=pca_results[:, 1],
+        z=pca_results[:, 2],
         color=deviations,
         color_continuous_scale="RdYlGn_r",
         hover_name=urls,
         labels={"color": "Deviation"},
-        title="3D UMAP Projection of Page Embeddings"
+        title="3D PCA Projection of Page Embeddings"
     )
     fig.add_scatter3d(
-        x=[centroid_umap[0]],
-        y=[centroid_umap[1]],
-        z=[centroid_umap[2]],
+        x=[centroid_pca[0]],
+        y=[centroid_pca[1]],
+        z=[centroid_pca[2]],
         mode="markers",
         marker=dict(size=15, color="green"),
         name="Centroid"
